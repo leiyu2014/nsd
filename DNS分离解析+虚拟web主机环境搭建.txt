@@ -1,0 +1,187 @@
+##################################################################
+####################DNS分离解析+虚拟web主机搭建记录###############
+##################################################################
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+1、服务器准备
+CentOs7最小化安装+链接克隆+（Mem.512M,Hd.15G）
+DNS服务器(svr-dns)：192.168.4.7    
+web1服务器(svr-web1)：192.168.4.10
+web2服务器(svr-web2)：192.168.4.20
+客户端服务器(clients)：192.168.4.207（208）
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+2、环境准备
+2.1 用户root/leiyu
+2.2 主机名
+	hostname   XXXX
+	echo  XXXX > /etc/hostname
+2.3 SELinux
+	setenforce  0
+	/etc/selinux/config :SELINUX=permissive
+
+2.4 firewall
+	firewall-cmd --set-default-zone=trusted
+2.5 IP
+	网卡名修改（省略一万字）
+	nmcli connection modify eth0 ipv4.method manual ipv4.addresses
+	XXXX/24  ipv4.gateway 192.168.4.254 connection.autoconnect yes
+	nmcli connection up eth0
+	验证：ip address show  
+	      ip route   show
+2.6 DNS
+	echo nameserver  192.168.4.7 > /etc/resolv.conf
+	
+2.7 yum搭建
+	2.7.1自动挂载cdrom
+		vi   /etc/fstab 
+		/dev/cdrom    /dvd   iso9660     defaults     0  0
+		mount -a
+	2.7.2yum配置文件
+	vi dvd.repo 
+
+	[dvd]
+	name="centos7-cdrom"
+	baseurl=file:///dvd
+	enabled=1
+	gpgcheck=0
+	2.7.3
+	yum makecache
+	yum repolist
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+3.DNS分离解析服务搭建（192.168.4.7）
+	3.1 DNS主配置文件修改
+	vi /etc/named.conf
+	options {
+		directory 	"/var/named";
+	};
+	view "client207" {
+		match-clients { 192.168.4.207; };
+		zone "163.com" IN { 
+		type master;
+		file "163.com.zone";
+		};
+		zone "qq.com" IN { 
+		type master;
+		file "qq.com.zone";
+		};	
+	};
+
+	view "client208" {
+		match-clients { any; };
+		zone "163.com" IN { 
+		type master;
+		file "163.com.other";
+		};
+		zone "qq.com" IN { 
+		type master;
+		file "qq.com.other";
+		};	
+	};
+	3.2 建立地址库文件
+	163.com.zone
+	$TTL 1D
+	@	IN SOA	@ rname.invalid. (
+					0	; serial
+					1D	; refresh
+					1H	; retry
+					1W	; expire
+					3H )	; minimum
+	163.com.	NS	svr-dns
+	svr-dns		A	192.168.4.7
+	www             A       192.168.4.10
+
+	163.com.other
+	$TTL 1D
+	@	IN SOA	@ rname.invalid. (
+					0	; serial
+					1D	; refresh
+					1H	; retry
+					1W	; expire
+					3H )	; minimum
+	163.com.	NS	svr-dns
+	svr-dns		A	192.168.4.7
+	www		A       192.168.4.20
+
+	qq.com.zone
+	$TTL 1D
+	@	IN SOA	@ rname.invalid. (
+					0	; serial
+					1D	; refresh
+					1H	; retry
+					1W	; expire
+					3H )	; minimum
+	qq.com.		NS	svr-dns
+	svr-dns		A	192.168.4.7
+	www  		A 	192.168.4.10
+
+	qq.com.other
+	$TTL 1D
+	@	IN SOA	@ rname.invalid. (
+					0	; serial
+					1D	; refresh
+					1H	; retry
+					1W	; expire
+					3H )	; minimum
+	qq.com.		NS	svr-dns
+	svr-dns		A	192.168.4.7
+	www		A	192.168.4.20
+
+	3.3重启DNS服务
+	systemctl restart named
+
+	3.4测试验证
+	nslookup  www.163.com
+	nslookup  www.qq.com
+	--ps: 使用nslookup需要先安装 bind-utils
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+4. 虚拟web主机搭建（192.168.4.10|20）
+	4.1服务安装
+	yum -y install httpd
+	4.2创建web应用目录
+	mkdir -p /var/www/webs/163
+	mkdir -p /var/www/webs/qq
+	4.3编写index文件
+	echo "Love is colorbind . From 192.168.4.10(20)" > /var/www/webs/163/index.html
+	echo "Layast won't fail . From 192.168.4.10(20)" > /var/www/webs/qq/index.html
+	4.2修改主配置文件/etc/httpd/conf/httpd.conf
+	增加：
+	<Directory "/var/www/webs/163">
+        AllowOverride none
+        Require all granted
+	</Directory>
+
+	<Directory "/var/www/webs/qq">
+        AllowOverride none
+        Require all granted
+	</Directory>
+	4.3修改调用配置文件
+	<VirtualHost *:80>
+	ServerName www.qq.com
+	DocumentRoot /var/www/webs/qq
+	</VirtualHost>
+
+	<VirtualHost *:80>
+	ServerName www.163.com
+	DocumentRoot /var/www.webs/163
+	</VirtualHost>
+
+	4.4 重启web服务
+	systemctl restart httpd
+	
+	4.5 访问验证
+	192.168.4.207
+	[root@clients ~]# curl www.163.com
+	Love is colorbind . From 192.168.4.10
+	[root@clients ~]# curl www.qq.com
+	Layast won't fail . From 192.168.4.10
+
+	192.168.4.208
+	[root@clients ~]# curl www.qq.com
+	Layast won't fail . From 192.168.4.20
+	[root@clients ~]# curl www.163.com
+	Love is colorbind . From 192.168.4.20
+
+
+
+
+
